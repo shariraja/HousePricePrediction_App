@@ -2,6 +2,7 @@ import streamlit as st
 import joblib
 import numpy as np
 import pandas as pd
+from groq import Groq
 
 # ── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -351,6 +352,51 @@ def load_model():
 
 model = load_model()
 
+# ── Groq AI Analysis Function ─────────────────────────────────────────────────
+def get_ai_report(prediction, qual, area, year, garage, rooms, basement, fireplaces, central_air):
+    try:
+        client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+        prompt = f"""You are a senior real estate analyst at Amar_S AI — a world-class property intelligence firm.
+
+A residential property has been analyzed by our XGBoost valuation model:
+
+PROPERTY PROFILE:
+- Predicted Market Value: ${prediction:,.0f}
+- Overall Quality Score: {qual}/10
+- Above-Ground Living Area: {area} sq ft
+- Year Built: {year}
+- Garage Capacity: {garage} cars
+- Total Rooms: {rooms}
+- Basement Finished Area: {basement} sq ft
+- Fireplaces: {fireplaces}
+- Central Air Conditioning: {central_air}
+
+Provide a professional analysis with exactly these 4 sections:
+
+1. VALUATION INSIGHT
+Why this property is valued at ${prediction:,.0f} in 2-3 sentences.
+
+2. TOP VALUE DRIVERS
+Which 3 features are pushing the price up most and why.
+
+3. IMPROVEMENT RECOMMENDATIONS
+Top 2-3 upgrades that would increase value significantly.
+
+4. INVESTMENT VERDICT
+One clear verdict: BUY / HOLD / PASS with 2-sentence justification.
+
+Keep it professional, concise, and data-driven."""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=700,
+            temperature=0.7,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ AI Report unavailable: {str(e)}"
+
 # ── Navbar ───────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="nexval-nav anim-1">
@@ -460,10 +506,17 @@ btn_col, _ = st.columns([1, 1])
 with btn_col:
     predict_clicked = st.button("◈  Run Valuation Model  →")
 
-# ── Prediction Output ─────────────────────────────────────────────────────────
+# ── Session State Init ────────────────────────────────────────────────────────
+if "prediction" not in st.session_state:
+    st.session_state.prediction = None
+if "ai_report" not in st.session_state:
+    st.session_state.ai_report = None
+if "input_snapshot" not in st.session_state:
+    st.session_state.input_snapshot = None
+
+# ── Run Prediction ────────────────────────────────────────────────────────────
 if predict_clicked:
     central_air_val = 1 if CentralAir == "Yes" else 0
-
     input_data = pd.DataFrame([[
         OverallQual, GrLivArea, GarageCars, st1FlrSF,
         TotRmsAbvGrd, YearBuilt, GarageYrBlt, MasVnrArea,
@@ -475,8 +528,17 @@ if predict_clicked:
         'Fireplaces','BsmtFinSF1','LotFrontage','WoodDeckSF',
         'OpenPorchSF','LotArea','CentralAir'
     ])
+    st.session_state.prediction = model.predict(input_data)[0]
+    st.session_state.ai_report  = None  # reset old report
+    st.session_state.input_snapshot = {
+        "qual": OverallQual, "area": GrLivArea, "year": YearBuilt,
+        "garage": GarageCars, "rooms": TotRmsAbvGrd,
+        "basement": BsmtFinSF1, "fireplaces": Fireplaces, "air": CentralAir
+    }
 
-    prediction = model.predict(input_data)[0]
+# ── Show Results ──────────────────────────────────────────────────────────────
+if st.session_state.prediction is not None:
+    prediction = st.session_state.prediction
 
     r_col1, r_col2 = st.columns([1.1, 0.9], gap="large")
 
@@ -486,10 +548,8 @@ if predict_clicked:
           <div class="result-label">◉ Valuation Complete · Amar_S AI · XGBoost v4.2</div>
           <div class="result-price">${prediction:,.0f}</div>
           <div class="result-sub">Estimated Market Value · USD</div>
-          <div>
-            <span class="result-badge">✓ High Confidence Prediction</span>
-          </div>
-          <div style="margin-top:1.6rem; display:flex; justify-content:center; gap:2.5rem;">
+          <div><span class="result-badge">✓ High Confidence Prediction</span></div>
+          <div style="margin-top:1.6rem;display:flex;justify-content:center;gap:2.5rem;">
             <div style="text-align:center">
               <div style="font-family:'Syne',sans-serif;font-size:1.1rem;font-weight:700;color:#E8EDF5">${prediction*0.93:,.0f}</div>
               <div style="font-size:0.7rem;color:#6B7A99;letter-spacing:0.05em;text-transform:uppercase">Low Estimate</div>
@@ -509,50 +569,70 @@ if predict_clicked:
         """, unsafe_allow_html=True)
 
     with r_col2:
-        # Feature importance display
         features_importance = {
-            "Overall Quality": 32,
-            "Living Area":     24,
-            "Year Built":      14,
-            "Garage Cars":     10,
-            "Basement Area":    8,
-            "1st Floor SF":     7,
-            "Lot Area":         5,
+            "Overall Quality": 32, "Living Area": 24, "Year Built": 14,
+            "Garage Cars": 10, "Basement Area": 8, "1st Floor SF": 7, "Lot Area": 5,
         }
         colors = ["#F0A500","#F0A500","#00D4C8","#00D4C8","#6B7A99","#6B7A99","#6B7A99"]
-
         bars_html = ""
         for (k, v), c in zip(features_importance.items(), colors):
-            bars_html += f"""
-            <div class="fi-row">
-              <div class="fi-label">{k}</div>
-              <div class="fi-bar-wrap">
-                <div class="fi-bar" style="width:{v}%;background:{c}"></div>
-              </div>
-              <div class="fi-val">{v}%</div>
-            </div>"""
+            bars_html += f'<div style="display:flex;align-items:center;gap:0.8rem;margin-bottom:0.7rem;"><div style="font-size:0.78rem;color:#6B7A99;width:130px;flex-shrink:0;">{k}</div><div style="flex:1;height:6px;background:#1E2A40;border-radius:3px;overflow:hidden;"><div style="width:{v}%;height:100%;background:{c};border-radius:3px;"></div></div><div style="font-family:monospace;font-size:0.72rem;color:#6B7A99;width:38px;text-align:right;">{v}%</div></div>'
 
         st.markdown(f"""
-        <div class="conf-wrap">
-          <div class="conf-title">◈ Feature Influence Breakdown</div>
+        <div style="background:#111827;border:1px solid #1E2A40;border-radius:14px;padding:1.4rem 1.6rem;">
+          <div style="font-family:'Syne',sans-serif;font-size:0.85rem;font-weight:700;color:#E8EDF5;margin-bottom:1rem;">◈ Feature Influence Breakdown</div>
           {bars_html}
-          <div style="margin-top:1.2rem;padding-top:1rem;border-top:1px solid #1E2A40">
-            <div class="meter-lbl" style="margin-bottom:0.6rem;font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;color:#F0A500">Model Confidence</div>
-            <div class="meter-row">
-              <div class="meter-lbl">Accuracy</div>
-              <div class="meter-bar"><div class="meter-fill" style="width:97%"></div></div>
-              <div class="meter-pct">97%</div>
-            </div>
-            <div class="meter-row">
-              <div class="meter-lbl">Data Coverage</div>
-              <div class="meter-bar"><div class="meter-fill" style="width:91%"></div></div>
-              <div class="meter-pct">91%</div>
-            </div>
-            <div class="meter-row">
-              <div class="meter-lbl">Signal Quality</div>
-              <div class="meter-bar"><div class="meter-fill" style="width:88%"></div></div>
-              <div class="meter-pct">88%</div>
-            </div>
+          <div style="margin-top:1.2rem;padding-top:1rem;border-top:1px solid #1E2A40;">
+            <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;color:#F0A500;margin-bottom:0.6rem;">Model Confidence</div>
+            <div style="display:flex;align-items:center;gap:0.8rem;margin-bottom:0.8rem;"><div style="font-size:0.75rem;color:#6B7A99;width:110px;">Accuracy</div><div style="flex:1;height:8px;background:#1E2A40;border-radius:4px;"><div style="width:97%;height:100%;border-radius:4px;background:linear-gradient(90deg,#F0A500,#00D4C8);"></div></div><div style="font-size:0.7rem;color:#F0A500;width:34px;text-align:right;">97%</div></div>
+            <div style="display:flex;align-items:center;gap:0.8rem;margin-bottom:0.8rem;"><div style="font-size:0.75rem;color:#6B7A99;width:110px;">Data Coverage</div><div style="flex:1;height:8px;background:#1E2A40;border-radius:4px;"><div style="width:91%;height:100%;border-radius:4px;background:linear-gradient(90deg,#F0A500,#00D4C8);"></div></div><div style="font-size:0.7rem;color:#F0A500;width:34px;text-align:right;">91%</div></div>
+            <div style="display:flex;align-items:center;gap:0.8rem;"><div style="font-size:0.75rem;color:#6B7A99;width:110px;">Signal Quality</div><div style="flex:1;height:8px;background:#1E2A40;border-radius:4px;"><div style="width:88%;height:100%;border-radius:4px;background:linear-gradient(90deg,#F0A500,#00D4C8);"></div></div><div style="font-size:0.7rem;color:#F0A500;width:34px;text-align:right;">88%</div></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── AI Report Section ──────────────────────────────────────────────────────
+    st.markdown('<div class="gold-divider"></div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="text-align:center;margin-bottom:1.6rem;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;letter-spacing:0.18em;text-transform:uppercase;color:#F0A500;margin-bottom:0.5rem;">◈ Generative AI · Powered by Groq LLaMA3</div>
+      <div style="font-family:'Syne',sans-serif;font-size:1.4rem;font-weight:700;color:#E8EDF5;margin-bottom:0.4rem;">AI Property Intelligence Report</div>
+      <div style="font-size:0.88rem;color:#6B7A99;">Deep expert analysis — valuation reasoning, value drivers and investment verdict</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    ai_btn_col, _ = st.columns([1, 1])
+    with ai_btn_col:
+        generate_report = st.button("🤖  Generate AI Report  →")
+
+    if generate_report:
+        snap = st.session_state.input_snapshot
+        with st.spinner("◉  Amar_S AI is analyzing your property..."):
+            st.session_state.ai_report = get_ai_report(
+                prediction,
+                snap["qual"], snap["area"], snap["year"],
+                snap["garage"], snap["rooms"], snap["basement"],
+                snap["fireplaces"], snap["air"]
+            )
+
+    if st.session_state.ai_report:
+        report = st.session_state.ai_report
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#0D1120 0%,#111827 100%);
+          border:1px solid rgba(240,165,0,0.25);border-radius:20px;
+          padding:2rem 2.2rem;margin-top:1rem;position:relative;overflow:hidden;">
+          <div style="position:absolute;top:0;left:0;right:0;height:2px;
+            background:linear-gradient(90deg,transparent,#F0A500,transparent);"></div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;
+            letter-spacing:0.18em;text-transform:uppercase;color:#F0A500;margin-bottom:1.2rem;">
+            ◈ Amar_S AI · Property Intelligence Report</div>
+          <div style="font-family:'DM Sans',sans-serif;font-size:0.95rem;
+            color:#C8D4E8;line-height:1.85;white-space:pre-wrap;">{report}</div>
+          <div style="margin-top:1.4rem;padding-top:1rem;border-top:1px solid #1E2A40;
+            font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:#6B7A99;
+            display:flex;justify-content:space-between;">
+            <span>Generated by Amar_S AI · LLaMA3-8B via Groq</span>
+            <span>Not financial advice</span>
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -565,3 +645,4 @@ st.markdown("""
   <div class="nav-badge" style="font-size:0.65rem">Model · XGBoost 4.2 · RMSE 18,432</div>
 </div>
 """, unsafe_allow_html=True)
+
